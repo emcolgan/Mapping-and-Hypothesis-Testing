@@ -1,0 +1,301 @@
+---
+title: 'Mapping and Hypothesis testing'
+author: "Emily Colgan"
+output:
+  html_document:
+    css: lab.css
+---
+
+```{r setup, include=FALSE}
+# Setup the environment
+library(knitr)
+knitr::opts_chunk$set(fig.align='center',fig.width=10, fig.height=6, fig.path='Figs/',  warning=FALSE, echo=TRUE, eval=TRUE, message=FALSE, cache=FALSE)
+```
+</div>
+
+## Introduction
+
+Cities all over North America contain "historic" neighborhoods. Historic neighborhoods are areas where the buildings have historical importance not because of their individual significance but because, as a collection, they represent the architectural sensibilities of a particular time period. Establishing the 'significance' of a neighborhood's historical character is a matter for historians not statisticians. However, there is an important question about historic preservation -- does it help or hurt property values?
+
+## Part I
+
+```{r}
+# Here's an easy way to check if a package is installed
+packages <- c("foreign", "tidyverse", "sf", "kableExtra", "agricolae")
+packages %in% rownames(installed.packages())
+```
+
+Now that everything is installed we'll load our libraries
+
+```{r include=T}
+library(foreign) # for reading in a dbf
+library(sf)
+library(agricolae) # has functions for 2+ hypothesis tests
+library(tidyverse) # all the good stuff is in here
+library(kableExtra)
+```
+
+Now, we need to get the dbase file. We are working with a shapefile and associated dbase file for [Manhattan, New York](https://www.dropbox.com/s/b13sa3xs2a1822d/MNMapPLUTO.dbf?dl=1). 
+
+```{r}
+MN <- foreign::read.dbf("data/MNMapPLUTO.dbf")
+```
+
+The data include information on just about every building (circa 2010) in Manhattan -- over 40,000 buildings. Most buildings have X, Y coordinates allowing you to map them simply by using the ggplot command, specifying those columns to ggplot's helper function, `aes()`:
+
+```{r}
+# Map all of the buildings in Manhattan
+# Careful... this will be pretty slow!
+ggplot(data = MN, aes(y = YCoord, x = XCoord)) +
+  geom_point() 
+``` 
+
+Something is wrong. The resulting plot doesn't look at all like a map of Manhattan. This is because some buildings have not been assigned coordinates and have a X, Y position of `(0, 0).` These must be removed from the data first:
+
+```{r}
+MN <- MN %>%
+  filter(XCoord > 0) %>%
+  filter(YCoord > 0)
+```
+
+```{r}
+ggplot(data = MN, aes(y = YCoord, x = XCoord)) +
+  geom_point()
+```
+
+## Identifying Historic Districts
+
+We will be working with buildings that are in a historic district. Here, we are most interested in `AssessTot` which is the total assessed property value, `HistDist` which is the name of the designated historic district that building is in, and later on we'll be looking at `BldgArea`, the area of the building (probably in square feet).
+
+We need to be able to identify these buildings, but the way the data file is coded is awkward. 
+
+```{r}
+MN$HistDist[1:10] %>% kable %>% kableExtra::kable_styling()
+```
+
+If a building is in a historic district, we know the name of the district. Over 32,000 buildings are a group called `NA's`, these appear near the bottom of the list of districts. We'll now re-code the `HistDist` column to make a 'categorical' variable which takes the value of `"In"` if a building is in a historic district and a value of `"Out"` if it is not in a historic district.
+
+```{r}
+MN <- MN%>%
+  mutate(HD = factor(if_else(is.na(HistDist), "Out", "In")))
+```
+
+</div>
+
+Now we can make a map of historic districts.
+
+```{r}
+
+ggplot(data = MN, aes(x = XCoord, y = YCoord, color = HD)) + 
+  geom_point() +
+  coord_fixed()
+
+```
+
+Now we are going to use R as a GIS with the `sf` library. 
+
+First, we convert these points into a projection and plot as a spatial object using the `st_as_sf` function. The key pieces of information that `st_as_sf` needs are the x and y coordinates with the `coords` argument, and the projection with the `crs` argument. The correct coordinate system is NAD83 / New York Long Island (ftUS), EPSG: 2263
+
+```{r}
+MN_spatial <- MN %>%
+  st_as_sf(coords = c("XCoord", "YCoord"),
+           crs=2263)
+```
+
+Now, we map using ggplot, and geom_sf.
+
+```{r}
+
+ggplot(data = MN_spatial) +
+  geom_sf() +
+  ggtitle("How neat is that???")
+```
+Even though we found the right projection, it's easier moving forward to deal with the original dataset, not the sf.
+
+- `facet_wrap` splits it into separate panels for each factor in the HD column. This is handy when there are many overlapping points, for example.
+- `coord_fixed` keeps the coordinates fixed, so that a unit of x is the same size on the screen as a unit of y. 
+- the preceding lines of code are all dealing with the fundamental display of the data. the following lines are modifying the colors and labels.
+- `theme_bw` and other `theme_xyz` functions are premade themes (there are several)
+
+```{r}
+p1 <- ggplot(data = MN, aes(x = XCoord, y = YCoord, color = HD)) +
+  geom_point() +
+  facet_wrap(~HD) +
+  coord_fixed() +
+  theme_dark() +
+  xlab("X Coordinate")+
+  ggtitle(label ="Historical Districts of Manhattan, NY",
+          subtitle = "Coordinate points either in or out of historical districts") +
+  ylab("Y Coordinate")
+p1
+```
+</div>
+
+## Simple Hypothesis Testing
+
+Our goal here is to explore the _effect_ of historic districts (`HD`) on property values (`AssessTot`) in New York City. 
+
+Null and Alternative Hypotheses
+$H_0$: μreg = μHD
+$H_A$: μreg != μHD
+
+```{r}
+shapiro.test(MN$AssessTot[0:5000]) #not normally distributed
+HD_grouped <- MN %>%
+  group_by(HD) %>%
+  summarise(AssessTot)
+  
+HD_grouped %>% summarise(med = median(AssessTot))
+  
+
+wilcox.test(HD_grouped$AssessTot,alternative = "greater")
+```
+
+Historical district designation does affect property value. With our alpha = 0.05, using a Wilcox text we got a p-value of less than 2.2e-16. We will reject the null hypothesis and say that the medians are not equal. With the alternative hypothesis that the historical designation leads to higher property value we got a very small p-value so we would still reject the null. 
+
+</div>
+
+## Part II
+
+## Testing Hypotheses on more than two groups
+
+We could also do tests of whether the assessed value differs by a variable that is not dichotomous (like all of the ones done here) but rather categorical (nominal) with more than two levels. For example, what if all Historic Districts are not created equal? Maybe there is a lot of variation between historic districts that we're not really paying attention to. Consider the following table:
+
+```{r}
+hd_summary <- MN %>%
+  filter(AssessTot>0)%>%
+  group_by(HistDist) %>%
+  summarise(n=n()) %>%
+  arrange(desc(n)) 
+
+hd_summary %>%
+  slice(1:10)%>%
+  kable(caption = paste("There are", nrow(hd_summary)-1, "Historic Districts")) %>%
+  kable_styling()
+```
+
+Not only are there a lot of historic districts, there is a considerable variation in sample size, `r range(hd_summary$n)`. There are `r (nrow(filter(hd_summary, n>400))-1)` historic districts with more than 400 buildings, So maybe we'll focus on those.
+
+```{r}
+
+filter_dist <- na.omit(hd_summary) %>%
+  filter(n>400) 
+list_dist = filter_dist[['HistDist']]
+
+big_histdist <- MN %>%
+  filter(HistDist %in% list_dist) %>%
+  filter(AssessTot > 0)
+
+```
+
+Visualize the data with a boxplot
+
+```{r}
+# code here 
+data(big_histdist)
+#boxplot(big_histdist$AssessTot - big_histdist$HistDist)
+box_dist <- ggplot(big_histdist, aes(x = HistDist, y = AssessTot)) + geom_boxplot()
+box_dist
+```
+
+Transform it just to get a better look at the variation.
+
+```{r}
+box_dist + scale_y_log10()
+```
+
+</div>
+
+It looks like maybe you could log-transform and achieve normality? 
+Check normality on one district.
+
+```{r}
+greenwich <- big_histdist %>%
+  filter(HistDist == "Greenwich Village")
+scale_y_log10("AssessTot")
+shapiro.test(greenwich$AssessTot)
+```
+It is not normally distributed.
+
+</div>
+
+So now, we know that data are not normal, and we know that the means do look different after transforming the variables for visualization purposes. Are they different?
+
+Conduct a Kruskall-Wallis test to see if the property values are different from one historic district to the next for our four districts of interest. 
+
+```{r}
+# kruskal test
+kruskal.test(big_histdist$AssessTot,big_histdist$HistDist)
+
+```
+
+Which district has the lowest average assessment total?
+
+``` {r}
+dist_groups <- big_histdist %>%
+  group_by(HistDist) %>%
+  mutate(avg_tot = mean(AssessTot)) 
+print(min(dist_groups$avg_tot))
+#thats in greenwich village
+```
+
+Greenwich Village! Let's all move to hip old buildings in that district.
+</div>
+
+But! What if the buildings in some historic districts are bigger on average, and so the property values are higher because they're just bigger, instead of being due to the prestige (or lack thereof) of being in a particular historic district?
+
+Adjust building value by building area.
+```{r}
+
+big_histdist <- big_histdist %>%
+  filter(BldgArea > 0) %>%
+  mutate(value = AssessTot/BldgArea)
+
+box_value <- ggplot(big_histdist, aes(x = HistDist, y =value)) + geom_boxplot()
+box_value + scale_y_log10()
+
+```
+
+Now, use a Kruskal-Wallis test to see if the area of the buildings affects the assessment total of the building for each historical district. 
+
+```{r}
+kruskal.test(big_histdist$value, big_histdist$HistDist)
+```
+Our output tells us that there is significant differences between the historical districts for the house value. 
+
+This tells us that there are significant differences between the historical districts and that the building area of a house affects its assessment total. Therefore we cannot use assessment total alone as a deciding factor. 
+
+</div>
+Let's create another variable for building age (since older buildings are built better)
+</div>
+
+
+```{r}
+
+big_histdist <- big_histdist %>%
+  mutate(built_time = case_when(YearBuilt < 1900 ~ "early",
+            YearBuilt <= 1970 ~ "middle",
+            YearBuilt > 1970 ~ "late"))
+```
+
+</div>
+
+Check for normality
+```{r}
+# code here 
+box_time <- ggplot(big_histdist, aes(x = built_time, y =value)) + geom_boxplot()
+box_time + scale_y_log10()
+```
+
+An appropriate test would be a Kruskal-Wallis Test to see if there are significant differences between the groups. 
+
+Our hypotheses are:
+$H_0$: The means for each of the groups are equal.
+$H_A$: The means for each of the groups are not equal. 
+
+```{r }
+kruskal.test(big_histdist$value, big_histdist$built_time)
+```
+Because of our low p-value, we can reject the null hypothesis and say that there are significant differences in average value between the different groups. 
+
+</div>
